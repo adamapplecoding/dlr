@@ -1,0 +1,80 @@
+name: Download from Commit & Upload to Release
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  save-file:
+    if: contains(github.event.head_commit.message, 'download:') || contains(github.event.head_commit.message, 'download-zip:')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 zip
+
+      - name: Download files
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+
+          if echo "$MSG" | grep -qP 'download-zip:'; then
+            URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
+          else
+            URL_LINE=$(echo "$MSG" | grep -oP 'download:\s*\K.*')
+          fi
+
+          mkdir -p downloads
+
+          for URL in $URL_LINE; do
+            echo "Downloading: $URL"
+
+            aria2c \
+              --split=8 \
+              --max-connection-per-server=8 \
+              --dir downloads \
+              "$URL"
+          done
+
+      - name: Create archive
+        run: |
+          mkdir release
+
+          ARCHIVE="release/downloads.zip"
+
+          zip -r -0 "$ARCHIVE" downloads
+
+          SIZE=$(stat -c%s "$ARCHIVE")
+          LIMIT=$((1900 * 1024 * 1024))
+
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "Archive exceeds GitHub Release asset limit, splitting..."
+
+            zip -r -0 -s 1900m release/downloads_split.zip downloads
+
+            rm "$ARCHIVE"
+          fi
+
+      - name: Generate tag
+        id: tag
+        run: |
+          TAG="download-$(date +%Y%m%d-%H%M%S)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Download Release ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          files: |
+            release/*
